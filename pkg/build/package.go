@@ -442,7 +442,10 @@ func (pc *PackageBuild) EmitPackage(ctx context.Context) error {
 	log.Info("generating package " + pc.Identity())
 
 	// filesystem for the data package
-	fsys := readlinkFS(pc.WorkspaceSubdir())
+	fsys, err := fs.Sub(pc.Build.WorkspaceDirFS, filepath.Join(melangeOutputDirName, pc.PackageName))
+	if err != nil {
+		return fmt.Errorf("unable to retrieve sub-dir of workspace dir: %+v", err)
+	}
 
 	// provide the tar writer etc/passwd and etc/group of guest filesystem
 	userinfofs := os.DirFS(pc.Build.GuestDir)

@@ -140,6 +140,7 @@ type Build struct {
 	DefaultTimeout        time.Duration
 	Auth                  map[string]options.Auth
 	IgnoreSignatures      bool
+	WorkspaceDirFS        apkofs.FullFS
 
 	EnabledBuildOptions []string
 
@@ -311,6 +312,7 @@ func (b *Build) buildGuest(ctx context.Context, imgConfig apko_types.ImageConfig
 	if b.Runner.Name() == container.QemuName {
 		b.ExtraPackages = append(b.ExtraPackages, []string{
 			"melange-microvm-init",
+			"gnutar",
 		}...)
 	}
 
@@ -949,8 +951,8 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 
 	// Retrieve the post build workspace from the runner
 	log.Infof("retrieving workspace from builder: %s", cfg.PodID)
-	fsys := apkofs.DirFS(b.WorkspaceDir)
-	if err := b.retrieveWorkspace(ctx, fsys); err != nil {
+	b.WorkspaceDirFS = apkofs.DirFS(b.WorkspaceDir)
+	if err := b.retrieveWorkspace(ctx, b.WorkspaceDirFS); err != nil {
 		return fmt.Errorf("retrieving workspace: %w", err)
 	}
 	log.Infof("retrieved and wrote post-build workspace to: %s", b.WorkspaceDir)
@@ -1241,6 +1243,7 @@ func (b *Build) retrieveWorkspace(ctx context.Context, fs apkofs.FullFS) error {
 
 	for {
 		hdr, err := tr.Next()
+		fmt.Println(hdr)
 		if errors.Is(err, io.EOF) {
 			break
 		}
