@@ -199,6 +199,11 @@ var linterMap = map[string]linter{
 		Explain:         "CUDA driver-specific libraries should be passed into the container by the host. Installing them in an image could override the host libraries and break GPU support. If this library is needed for build-time linking or ldd-check tests, please use a package containing a stub library instead. For libcuda.so, use nvidia-cuda-cudart-$cuda_version. For libnvidia-ml.so, use nvidia-cuda-nvml-dev-$cuda_version.",
 		defaultBehavior: Warn,
 	},
+	// "redirection": {
+	// 	LinterFunc:      redirectionLinter(),
+	// 	Explain:         "Background processes executed as part of tests via QEMU must be redirected to either a file or /dev/null. Any open file descriptors will leave the SSH connection open and the test will never complete.",
+	// 	defaultBehavior: Require,
+	// },
 }
 
 // Determine if a path should be ignored by a linter
@@ -844,4 +849,144 @@ func cudaDriverLibLinter(_ context.Context, _ *config.Configuration, _, path str
 	}
 
 	return fmt.Errorf("CUDA driver-specific library found: %s", path)
+}
+
+func RedirectionLinter(pipelines []config.Pipeline) error {
+	backgroundPattern := `.*&\s*$`
+
+	// Pattern to match daemon processes (containing daemon flags)
+	daemonFlags := []string{
+		`-d\b`,          // -d (short daemon flag)
+		`--daemon\b`,    // --daemon (GPG, SSH, etc.)
+		`--daemonize\b`, // --daemonize (MySQL, etc.)
+		`--detach\b`,    // --detach (Docker, etc.)
+		`-daemon\b`,     // -daemon (some Java apps)
+	}
+	daemonPattern := `.*(?:` + strings.Join(daemonFlags, "|") + `).*`
+
+	// Redirection patterns that indicate proper FD handling
+	redirectionPatterns := []string{
+		`>\s*\S+`,        // stdout to file: > file
+		`>>\s*\S+`,       // stdout append: >> file
+		`2>\s*\S+`,       // stderr to file: 2> file
+		`2>>\s*\S+`,      // stderr append: 2>> file
+		`&>\s*\S+`,       // both to file: &> file
+		`&>>\s*\S+`,      // both append: &>> file
+		`>\s*\S+.*2>&1`,  // stdout to file, stderr follows
+		`2>&1.*>\s*\S+`,  // stderr to stdout, then to file
+		`>\s*/dev/null`,  // stdout to /dev/null
+		`2>\s*/dev/null`, // stderr to /dev/null
+		`&>\s*/dev/null`, // both to /dev/null
+		`\d+>&\d+`,       // any file descriptor redirection
+	}
+
+	// Compile regex patterns
+	backgroundRegex := regexp.MustCompile(backgroundPattern)
+	daemonRegex := regexp.MustCompile(daemonPattern)
+
+	var redirectionRegexes []*regexp.Regexp
+	for _, pattern := range redirectionPatterns {
+		redirectionRegexes = append(redirectionRegexes, regexp.MustCompile(pattern))
+	}
+
+	// Function to check if a command has proper redirection
+	hasRedirection := func(cmd string) bool {
+		for _, regex := range redirectionRegexes {
+			if regex.MatchString(cmd) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Function to check if command may leave FDs open
+	mayLeaveFileDescriptorsOpen := func(cmd string) bool {
+		// Check if it's a background process or daemon process
+		isBackground := backgroundRegex.MatchString(cmd)
+		isDaemon := daemonRegex.MatchString(cmd)
+
+		if !isBackground && !isDaemon {
+			return false // Not a problematic process type
+		}
+
+		// If it's background or daemon, check if it has proper redirection
+		return !hasRedirection(cmd)
+	}
+
+	// Function to analyze shell script for problematic lines
+	analyzeShellScript := func(script string, pipelineName string) []string {
+		var problems []string
+
+		lines := strings.Split(script, "\n")
+
+		for i, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+
+			// Handle lines with multiple commands - split on & but be careful about quotes and here-docs
+			if strings.Contains(line, "&") {
+				// Split on & to find individual commands
+				parts := strings.Split(line, "&")
+				for j, part := range parts {
+					part = strings.TrimSpace(part)
+					if part == "" {
+						continue
+					}
+
+					// If this part was followed by &, it's a background command
+					if j < len(parts)-1 {
+						backgroundCmd := part + " &"
+						if mayLeaveFileDescriptorsOpen(backgroundCmd) {
+							problems = append(problems, fmt.Sprintf(
+								"Line %d: '%s' runs in background without redirection",
+								i+1, part,
+							))
+						}
+					}
+				}
+			} else {
+				// Regular line without &, check for daemon processes
+				if mayLeaveFileDescriptorsOpen(line) {
+					problems = append(problems, fmt.Sprintf(
+						"Line %d: '%s' may leave file descriptors open",
+						i+1, line,
+					))
+				}
+			}
+		}
+
+		return problems
+	}
+
+	var allProblems []string
+	foundCount := 0
+
+	for _, p := range pipelines {
+		problems := analyzeShellScript(p.Runs, p.Name)
+
+		if len(problems) > 0 {
+			foundCount++
+			fmt.Printf("❌ %s\n", p.Name)
+			for _, problem := range problems {
+				fmt.Printf("   %s\n", problem)
+				allProblems = append(allProblems, fmt.Sprintf("%s: %s", p.Name, problem))
+			}
+			fmt.Printf("   Fix: Add '> logfile.log 2>&1' to redirect output\n\n")
+		} else {
+			fmt.Printf("✅ %s\n", p.Name)
+		}
+	}
+
+	if foundCount == 0 {
+		fmt.Println("✓ No problematic process lines found")
+	} else {
+		fmt.Printf("Found %d pipeline(s) with lines that may leave file descriptors open\n", foundCount)
+		fmt.Println("Consider adding output redirection to prevent hanging processes")
+		errorMsg := fmt.Sprintf("unredirected output found in: %s", strings.Join(allProblems, ", "))
+		return fmt.Errorf(errorMsg)
+	}
+
+	return nil
 }

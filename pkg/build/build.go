@@ -37,10 +37,10 @@ import (
 	"chainguard.dev/apko/pkg/apk/apk"
 	apkofs "chainguard.dev/apko/pkg/apk/fs"
 	apko_build "chainguard.dev/apko/pkg/build"
-	"chainguard.dev/apko/pkg/tarfs"
 	apko_types "chainguard.dev/apko/pkg/build/types"
 	"chainguard.dev/apko/pkg/options"
 	"chainguard.dev/apko/pkg/sbom/generator/spdx"
+	"chainguard.dev/apko/pkg/tarfs"
 	"github.com/chainguard-dev/clog"
 	purl "github.com/package-url/packageurl-go"
 	"github.com/yookoala/realpath"
@@ -103,7 +103,7 @@ type Build struct {
 	WorkspaceDir    string
 	WorkspaceDirFS  apkofs.FullFS
 	WorkspaceIgnore string
-	GuestFS apkofs.FullFS
+	GuestFS         apkofs.FullFS
 	// Ordered directories where to find 'uses' pipelines.
 	PipelineDirs          []string
 	SourceDir             string
@@ -676,6 +676,11 @@ func (b *Build) BuildPackage(ctx context.Context) error {
 
 	linterQueue := []linterTarget{}
 	cfg := b.workspaceConfig(ctx)
+
+	// Run pre-build redirection linting
+	if err := linter.RedirectionLinter(b.Configuration.Test.Pipeline); err != nil {
+		return err
+	}
 
 	if !b.isBuildLess() {
 		imgRef, err := b.buildGuest(ctx, b.Configuration.Environment, b.GuestFS)
