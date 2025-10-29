@@ -122,7 +122,7 @@ jobs:
         uses: ./melange-src/.github/actions/setup-bubblewrap
       - if: matrix.runner == 'bubblewrap'
         run: |
-          make SHELL="/bin/bash" MELANGE="sudo melange" MELANGE_RUNNER="bubblewrap" MELANGE_EXTRA_OPTS="--generate-provenance" package/${{ matrix.package }}
+          make SHELL="/bin/bash" MELANGE="sudo melange" MELANGE_RUNNER="bubblewrap" package/${{ matrix.package }}
 
       - name: Download kernel for VMs
         if: matrix.runner == 'qemu'
@@ -153,7 +153,7 @@ jobs:
             QEMU_KERNEL_IMAGE=/tmp/kernel/boot/vmlinuz-virt \
             QEMU_KERNEL_MODULES=/tmp/kernel/lib/modules/ \
             MELANGE="/usr/bin/melange" \
-            MELANGE_EXTRA_OPTS="--runner qemu --generate-provenance" \
+            MELANGE_EXTRA_OPTS="--runner qemu" \
             package/${{ matrix.package }}
 
       - name: Output SLSA provenance
